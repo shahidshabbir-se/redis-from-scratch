@@ -25,7 +25,24 @@ The goal of this project is to understand systems programming fundamentals from 
                     │
                     ├── Incomplete ──► Wait for more network bytes (buffer preserved)
                     ├── Protocol   ──► Reject malformed client data
-                    └── Ok(Frame)  ──► Advance buffer, dispatch frame
+                    └── Ok(Frame)  ──► Advance buffer
+                                            │
+                                            ▼
+                                [ Command Handling (e.g. PING) ]
+                                            │
+                                            ▼
+                                   [ Response Frame ]
+                                            │
+                                            ▼
+                                  [ RESP2 Encoder ]
+                           encode(&Frame, &mut BytesMut)
+                                            │
+                                            ▼
+                                  [ Tokio AsyncWrite ]
+                                socket.write_all(&out)
+                                            │
+                                            ▼
+                                [ Sent over TCP Wire ]
 ```
 
 ---
@@ -40,10 +57,16 @@ The goal of this project is to understand systems programming fundamentals from 
   - [x] **Arrays (`*`)**: Composite and recursive aggregate frames (`*2\r\n$3\r\nGET\r\n$4\r\nuser\r\n`), including Null Arrays (`*-1\r\n`).
   - [x] **Incomplete Frame Handling**: Incremental TCP parsing without buffer corruption on partial reads.
   - [x] **Multiple Frame Handling**: Proper buffer slicing across packet coalescing (multiple commands in one TCP read).
-- [x] **Milestone 2: Async Networking Foundation**
+- [x] **Milestone 2: RESP2 Serializer / Encoder**
+  - [x] Fast, zero-allocation serialization directly into `&mut BytesMut` using `BufMut`.
+  - [x] Support for all RESP2 types (`Simple`, `Error`, `Integer`, `Bulk`, `Null`, `Array`).
+  - [x] Recursive encoding of nested aggregate frames.
+  - [x] Borrowed-input design (`&Frame`) to prevent unnecessary ownership transfer and cloning.
+- [x] **Milestone 3: Async Networking Foundation & End-to-End Ping**
   - [x] Tokio-based asynchronous TCP listener bound to `127.0.0.1:6379`.
   - [x] Multi-client concurrent connection lifecycle management using `tokio::spawn`.
   - [x] Zero-copy socket ingestion directly into `BytesMut` with `read_buf`.
+  - [x] Full round-trip execution: `redis-cli ping` received over TCP, parsed, encoded as `+PONG\r\n`, and replied.
 
 ---
 
@@ -64,9 +87,14 @@ TCP guarantees an ordered, reliable stream of bytes, not discrete messages. An o
 - Redis Bulk Strings can store arbitrary binary payloads (e.g. compressed data, serialized protocol buffers, images) containing arbitrary bytes such as `\r`, `\n`, or null bytes `\0`.
 - Bulk Strings are modeled as `bytes::Bytes` rather than `String`, using length prefixes rather than delimiters to locate boundaries.
 
-### 4. Recursive Array Parsing
+### 4. Recursive Array Parsing & Encoding
 - Redis client commands are sent on the wire as Arrays of Bulk Strings (e.g. `*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n`).
 - The parser uses bounded recursion: parsing an Array extracts its length, consumes the header, and recursively invokes `parse()` for each element, naturally supporting arbitrarily nested structures.
+- The encoder mirrors this with recursive serialization into `BytesMut`.
+
+### 5. Read-Only Borrowed Encoding (`&Frame`)
+- The encoder takes `frame: &Frame` rather than consuming ownership `frame: Frame`.
+- Passing by reference avoids dropping/moving data, allows multiple subsystems to inspect or log responses concurrently, and models clear read-only intent.
 
 ---
 
@@ -79,13 +107,11 @@ cargo run
 
 ### Connect with Official `redis-cli` or `netcat`
 ```bash
-# Using netcat
-printf "+OK\r\n" | nc 127.0.0.1 6379
-printf ":100\r\n" | nc 127.0.0.1 6379
-
-# Using official redis-cli
+# Live interactive ping
 redis-cli ping
-redis-cli set mykey hello
-redis-cli get mykey
+# Response: PONG
+
+# Using netcat
+printf "*1\r\n$4\r\nPING\r\n" | nc 127.0.0.1 6379
+# Response: +PONG
 ```
-The server will parse incoming frames and log the structured representations to standard output.

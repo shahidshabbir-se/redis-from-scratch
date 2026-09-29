@@ -1,8 +1,8 @@
 mod protocol;
 
 use bytes::BytesMut;
-use protocol::resp::parser::parse;
-use tokio::io::AsyncReadExt;
+use protocol::{Frame, encode, parse};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -30,7 +30,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Buffer: {:?}", &buffer[..]);
 
                 match parse(&mut buffer) {
-                    Ok(frame) => println!("Parsed: {:?}", frame),
+                    Ok(frame) => {
+                        println!("Parsed: {:?}", frame);
+                        // Encode the reply and write it to the socket
+                        let response = Frame::Simple("PONG".to_string());
+                        let mut out = BytesMut::new();
+                        encode(&response, &mut out);
+                        socket.write_all(&out).await?;
+                    }
                     Err(error) => println!("Parse error: {:?}", error),
                 }
             }
